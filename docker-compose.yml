@@ -38,7 +38,7 @@ services:
     - --web.console.templates=/usr/share/prometheus/consoles
     volumes:
     - ./prometheus.yml:/prometheus.yml:ro
-    - /home/5gtango/industry-pilot/cnf_ids_03/5GTango/industry-pilot/cnf_ids_03/cnf_ids_03/prometheus-data:/prometheus
+    - /home/eleni/Documents/ubi/5GTango/industry-pilot/cnf_ids_03/home/manuel/tng-sdk-benchmark/prometheus/prometheus-data:/prometheus
     depends_on:
     - cadvisor
   cadvisor:
