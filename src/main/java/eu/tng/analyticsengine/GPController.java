@@ -319,9 +319,12 @@ public class GPController {
             Duration between = Duration.between(startInstant, endInstant);
 
             long period_duration = between.getSeconds();
+            
+            String step = analytic_service.getString("step");
+            String step_in_seconds = step.replace("s", "");
 
             if (analytic_service.has("metrics")) {
-                period_duration = period_duration * analytic_service.getJSONArray("metrics").length();
+                period_duration = period_duration * analytic_service.getJSONArray("metrics").length() * Integer.parseInt(step_in_seconds);
             }
 
             // Temporal start = periods.getJSONObject(0).getString("start");
