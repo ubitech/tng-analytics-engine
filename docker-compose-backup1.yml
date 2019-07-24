@@ -32,13 +32,8 @@ services:
     - 9090:9090
     command:
     - --config.file=/prometheus.yml
-    - --storage.tsdb.path=/prometheus
-    - --storage.tsdb.retention.time=190d
-    - --web.console.libraries=/usr/share/prometheus/console_libraries
-    - --web.console.templates=/usr/share/prometheus/consoles
     volumes:
     - ./prometheus.yml:/prometheus.yml:ro
-    - /home/eleni/Documents/ubi/5GTango/industry-pilot/cnf_ids_03/home/manuel/tng-sdk-benchmark/prometheus/prometheus-data:/prometheus
     depends_on:
     - cadvisor
   cadvisor:
@@ -62,4 +57,3 @@ services:
       - 9091
     ports:
       - "9091:9091"
-    
