@@ -22,7 +22,7 @@ ENV PROMETHEUS_GATEWAY pushgateway:9091
 
 ENV MONITORING_ENGINE http://son-vnv-monitor-manager:8000
 #ENV PROMETHEUS_URL http://son-monitor-prometheus:9090
-ENV PROMETHEUS_URL http://prometheus:9090
+ENV PROMETHEUS_URL http://192.168.1.84:9090
 ENV REPOSITORY_URL http://tng-rep:4012
 
 

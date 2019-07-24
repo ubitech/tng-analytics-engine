@@ -319,12 +319,20 @@ public class GPController {
             Duration between = Duration.between(startInstant, endInstant);
 
             long period_duration = between.getSeconds();
-            
+
             String step = analytic_service.getString("step");
-            String step_in_seconds = step.replace("s", "");
+            int step_in_seconds = 1;
+            if (step.contains("m")) {
+                step_in_seconds = Integer.parseInt(step.replace("m", "")) * 60;
+            } else if (step.contains("s")) {
+                step_in_seconds = Integer.parseInt(step.replace("s", ""));
+            } else if (step.contains("h")) {
+                step_in_seconds = Integer.parseInt(step.replace("h", "")) * 3600;
+            }
 
             if (analytic_service.has("metrics")) {
-                period_duration = period_duration * analytic_service.getJSONArray("metrics").length() * Integer.parseInt(step_in_seconds);
+                period_duration = Math.round(period_duration * analytic_service.getJSONArray("metrics").length() / step_in_seconds);
+                System.out.println("num of metrics "+period_duration);
             }
 
             // Temporal start = periods.getJSONObject(0).getString("start");
@@ -332,7 +340,7 @@ public class GPController {
             // This is only added to the registry after success,
             // so that a previous success in the Pushgateway isn't overwritten on failure.
             Gauge num_of_metrics = Gauge.build().name("analytic_service_num_of_metrics").help("analytic_service_num_of_metrics").register(registry);
-            num_of_metrics.set(period_duration);//when step is 1second
+            num_of_metrics.set(period_duration);
         } finally {
             durationTimer.setDuration();
             PushGateway pg = new PushGateway(prometheusGateway);
