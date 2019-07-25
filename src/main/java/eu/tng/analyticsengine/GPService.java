@@ -11,6 +11,10 @@ import eu.tng.repository.dao.AnalyticResultRepository;
 import eu.tng.repository.dao.AnalyticServiceRepository;
 import eu.tng.repository.domain.AnalyticResult;
 import eu.tng.repository.domain.AnalyticService;
+import io.prometheus.client.CollectorRegistry;
+import io.prometheus.client.Counter;
+import io.prometheus.client.Gauge;
+import io.prometheus.client.exporter.PushGateway;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -19,6 +23,8 @@ import java.net.MalformedURLException;
 import java.net.ProtocolException;
 import java.net.URL;
 import java.sql.Timestamp;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
@@ -64,13 +70,17 @@ public class GPService {
     @Value("${prometheus.url}")
     private String prometheusURL;
 
+    @Value("${prometheus.gateway}")
+    String prometheusGateway;
+
     @Value("${monitoring.engine}")
     private String monitoringEngine;
 
     @Value("${repository.url}")
     private String repositoryURL;
 
-    private static final Logger logger = Logger.getLogger(GPController.class.getName());
+    private static final Logger logger = Logger.getLogger(GPService.class.getName());
+    public static Counter requests = Counter.build().name("analytic_requests_total").help("Total analytic requests.").register();
 
     @Autowired
     private AnalyticServiceRepository analyticServiceRepository;
@@ -303,164 +313,211 @@ public class GPService {
 
     @Async
     public void consumeAnalyticService(String analytic_service_info) throws IOException {
-        Gson gson = new Gson();
-        JSONObject analytic_service = new JSONObject(analytic_service_info);
-        JSONArray periods = new JSONArray();
-        if (analytic_service.has("periods")) {
-            periods = analytic_service.getJSONArray("periods");
-        }
-        String step = analytic_service.getString("step");//"'3m'"
-        String name = analytic_service.getString("name");
-        String vendor = analytic_service.getString("vendor");
 
-        RestTemplate restTemplate = new RestTemplate();
+        CollectorRegistry registry = new CollectorRegistry();
+        Gauge duration = Gauge.build().name("analytic_service_duration_seconds").help("Duration of analytic process execution in seconds.").register(registry);
+        Gauge.Timer durationTimer = duration.startTimer();
 
-        JSONArray metrics = null;
-        if (vendor.equalsIgnoreCase("5gtango.vnv")) {
-            if (analytic_service.has("testr_uuid")) {
+        requests.inc();
+        requests.register(registry);
 
-                String testr_uuid = analytic_service.getString("testr_uuid");
-                JSONObject test_metadata = this.get5gtangoVnVTestMetadata(testr_uuid);
-                String nsr_id = test_metadata.getString("nsr_id");
+        try {
 
-                if (analytic_service.has("metrics")) {
-                    metrics = analytic_service.getJSONArray("metrics");
-                } else {
-                    List<String> metricslist = this.get5gtangoVnVNetworkServiceMetrics(nsr_id);
-                    metrics = new JSONArray(metricslist);
-                }
-                System.out.println("metrics--> " + metrics);
-                JSONObject periodOne = new JSONObject();
-                periodOne.put("start", test_metadata.getString("start"));
-                periodOne.put("end", test_metadata.getString("end"));
-                periods.put(periodOne);
-                //System.out.println("periods------------" + periods.toString());
+            Gson gson = new Gson();
+            JSONObject analytic_service = new JSONObject(analytic_service_info);
+            JSONArray periods = new JSONArray();
+            if (analytic_service.has("periods")) {
+                periods = analytic_service.getJSONArray("periods");
             }
+            String step = analytic_service.getString("step");//"'3m'"
+            String name = analytic_service.getString("name");
+            String vendor = analytic_service.getString("vendor");
 
-        } else if (analytic_service.has("metrics")) {
-            metrics = analytic_service.getJSONArray("metrics");
-            System.out.println("metrics--> " + metrics);
-        } else {
-            //TODO log no metrics requested
-        }
+            RestTemplate restTemplate = new RestTemplate();
 
-        logger.info("connect to prometheusURL" + prometheusURL);
-        //System.out.println("metrics.toString()" + metrics.toString());
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
-        MultiValueMap<String, String> map3 = new LinkedMultiValueMap<String, String>();
-        map3.add("prometheus_url", "'" + prometheusURL + "'");
-        map3.add("metrics", metrics.toString());
-        map3.add("step", "'" + step + "'");
-        map3.add("periods", periods.toString());
-        map3.add("enriched", "true");
+            JSONArray metrics = null;
+            if (vendor.equalsIgnoreCase("5gtango.vnv")) {
+                if (analytic_service.has("testr_uuid")) {
 
-        HttpEntity<MultiValueMap<String, String>> physiognomicaRequest3 = new HttpEntity<>(map3, headers);
+                    String testr_uuid = analytic_service.getString("testr_uuid");
+                    JSONObject test_metadata = this.get5gtangoVnVTestMetadata(testr_uuid);
+                    String nsr_id = test_metadata.getString("nsr_id");
 
-        AnalyticService as = analyticServiceRepository.findByName(name);
-
-        String analytic_service_url = physiognomicaServerURL + as.getUrl();
-        System.out.println("analytic_service_url" + analytic_service_url);
-
-        ResponseEntity<String> response3 = restTemplate.postForEntity(analytic_service_url, physiognomicaRequest3, String.class);
-
-        String myresponse = "";
-        if (null != response3 && null != response3.getStatusCode() && response3
-                .getStatusCode()
-                .is2xxSuccessful()) {
-
-            myresponse = response3.getBody();
-            myresponse = myresponse.replace("/ocpu/tmp/", physiognomicaServerURL + "/ocpu/tmp/");
-
-            String lines[] = myresponse.split("\\r?\\n");
-            JSONArray response = new JSONArray();
-            List<String> resultslist = as.getResults();
-            for (String line : lines) {
-
-                if (resultslist.stream().anyMatch(s -> line.contains(s))) {
-                    if (line.contains("html")) {
-                        JSONObject result = new JSONObject();
-                        result.put("type", "html");
-                        result.put("result", line);
-                        response.put(result);
-                    } else if (line.contains("csv")) {
-                        JSONObject result = new JSONObject();
-                        result.put("type", "csv");
-                        result.put("result", line);
-                        response.put(result);
-                    } else if (line.contains("json")) {
-                        JSONObject result = new JSONObject();
-                        result.put("type", "json");
-                        result.put("result", line);
-                        response.put(result);
-                    } else if (line.contains("jpg") || line.contains("png")) {
-                        JSONObject result = new JSONObject();
-                        result.put("type", "img");
-                        result.put("result", line);
-                        response.put(result);
+                    if (analytic_service.has("metrics")) {
+                        metrics = analytic_service.getJSONArray("metrics");
                     } else {
-                        JSONObject result = new JSONObject();
-                        result.put("type", "txt");
-                        result.put("result", line);
-                        response.put(result);
+                        List<String> metricslist = this.get5gtangoVnVNetworkServiceMetrics(nsr_id);
+                        metrics = new JSONArray(metricslist);
                     }
+                    System.out.println("metrics--> " + metrics);
+                    JSONObject periodOne = new JSONObject();
+                    periodOne.put("start", test_metadata.getString("start"));
+                    periodOne.put("end", test_metadata.getString("end"));
+                    periods.put(periodOne);
+                    //System.out.println("periods------------" + periods.toString());
                 }
 
+            } else if (analytic_service.has("metrics")) {
+                metrics = analytic_service.getJSONArray("metrics");
+                System.out.println("metrics--> " + metrics);
+            } else {
+                //TODO log no metrics requested
             }
-            logger.info(response.toString());
 
-            //save the analytic result
-            AnalyticResult analyticresult = new AnalyticResult();
-            analyticresult.setStatus("SUCCESS");
-            analyticresult.setExecutionMessage("The analytic service has succesfully completed.");
-            analyticresult.setAnalyticServiceName(name);
-            analyticresult.setExecutionDate(new Date());
-            analyticresult.setResults(response.toList());
-            AnalyticResult savedanalyticresult = analyticResulteRepository.save(analyticresult);
+            logger.info("connect to prometheusURL" + prometheusURL);
+            //System.out.println("metrics.toString()" + metrics.toString());
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
+            MultiValueMap<String, String> map3 = new LinkedMultiValueMap<String, String>();
+            map3.add("prometheus_url", "'" + prometheusURL + "'");
+            map3.add("metrics", metrics.toString());
+            map3.add("step", "'" + step + "'");
+            map3.add("periods", periods.toString());
+            map3.add("enriched", "true");
 
-            //update the callback url if any
-            if (analytic_service.has("callback")) {
-                String callback_url = analytic_service.getString("callback");
+            HttpEntity<MultiValueMap<String, String>> physiognomicaRequest3 = new HttpEntity<>(map3, headers);
 
-                HttpHeaders callbackHeaders = new HttpHeaders();
-                callbackHeaders.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
+            AnalyticService as = analyticServiceRepository.findByName(name);
 
-                logger.info("analyticresult  " + gson.toJson(analyticresult));
-                logger.info("callback_url  " + callback_url);
+            String analytic_service_url = physiognomicaServerURL + as.getUrl();
+            System.out.println("analytic_service_url" + analytic_service_url);
 
-                //ResponseEntity<String> callback_response = restTemplate.postForEntity(callback_url, gson.toJson(analyticresult), String.class);
-                String payload = gson.toJson(analyticresult);
-                StringEntity entity = new StringEntity(payload,ContentType.APPLICATION_JSON);
+            ResponseEntity<String> response3 = restTemplate.postForEntity(analytic_service_url, physiognomicaRequest3, String.class);
 
-                HttpClient httpClient = HttpClientBuilder.create().build();
-                HttpPost request = new HttpPost(callback_url);
-                request.setEntity(entity);
+            String myresponse = "";
+            if (null != response3 && null != response3.getStatusCode() && response3
+                    .getStatusCode()
+                    .is2xxSuccessful()) {
 
-                HttpResponse testresponse = httpClient.execute(request);
-                int statuscode = testresponse.getStatusLine().getStatusCode();
+                myresponse = response3.getBody();
+                myresponse = myresponse.replace("/ocpu/tmp/", physiognomicaServerURL + "/ocpu/tmp/");
 
-                if (statuscode == 200) {
-                    org.apache.http.HttpEntity entity1 = testresponse.getEntity();
-                    // Read the contents of an entity and return it as a String.
-                    String content = EntityUtils.toString((org.apache.http.HttpEntity) entity1);
-                    String callback_uuid = content;
+                String lines[] = myresponse.split("\\r?\\n");
+                JSONArray response = new JSONArray();
+                List<String> resultslist = as.getResults();
+                for (String line : lines) {
 
-                    Optional<AnalyticResult> existing_as = analyticResulteRepository.findByCallbackid(callback_uuid);
-                    if (existing_as.isPresent()) {
-                        logger.severe("duplicate callback_uuid. Analytic service is not saved");
-                        analyticResulteRepository.delete(savedanalyticresult);
-                        return;
+                    if (resultslist.stream().anyMatch(s -> line.contains(s))) {
+                        if (line.contains("html")) {
+                            JSONObject result = new JSONObject();
+                            result.put("type", "html");
+                            result.put("result", line);
+                            response.put(result);
+                        } else if (line.contains("csv")) {
+                            JSONObject result = new JSONObject();
+                            result.put("type", "csv");
+                            result.put("result", line);
+                            response.put(result);
+                        } else if (line.contains("json")) {
+                            JSONObject result = new JSONObject();
+                            result.put("type", "json");
+                            result.put("result", line);
+                            response.put(result);
+                        } else if (line.contains("jpg") || line.contains("png")) {
+                            JSONObject result = new JSONObject();
+                            result.put("type", "img");
+                            result.put("result", line);
+                            response.put(result);
+                        } else {
+                            JSONObject result = new JSONObject();
+                            result.put("type", "txt");
+                            result.put("result", line);
+                            response.put(result);
+                        }
+                    }
+
+                }
+                logger.info(response.toString());
+
+                //save the analytic result
+                AnalyticResult analyticresult = new AnalyticResult();
+                analyticresult.setStatus("SUCCESS");
+                analyticresult.setExecutionMessage("The analytic service has succesfully completed.");
+                analyticresult.setAnalyticServiceName(name);
+                analyticresult.setExecutionDate(new Date());
+                analyticresult.setResults(response.toList());
+                AnalyticResult savedanalyticresult = analyticResulteRepository.save(analyticresult);
+
+                //update the callback url if any
+                if (analytic_service.has("callback")) {
+                    String callback_url = analytic_service.getString("callback");
+
+                    HttpHeaders callbackHeaders = new HttpHeaders();
+                    callbackHeaders.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
+
+                    logger.info("analyticresult  " + gson.toJson(analyticresult));
+                    logger.info("callback_url  " + callback_url);
+
+                    //ResponseEntity<String> callback_response = restTemplate.postForEntity(callback_url, gson.toJson(analyticresult), String.class);
+                    String payload = gson.toJson(analyticresult);
+                    StringEntity entity = new StringEntity(payload, ContentType.APPLICATION_JSON);
+
+                    HttpClient httpClient = HttpClientBuilder.create().build();
+                    HttpPost request = new HttpPost(callback_url);
+                    request.setEntity(entity);
+
+                    HttpResponse testresponse = httpClient.execute(request);
+                    int statuscode = testresponse.getStatusLine().getStatusCode();
+
+                    if (statuscode == 200) {
+                        org.apache.http.HttpEntity entity1 = testresponse.getEntity();
+                        // Read the contents of an entity and return it as a String.
+                        String content = EntityUtils.toString((org.apache.http.HttpEntity) entity1);
+                        String callback_uuid = content;
+
+                        Optional<AnalyticResult> existing_as = analyticResulteRepository.findByCallbackid(callback_uuid);
+                        if (existing_as.isPresent()) {
+                            logger.severe("duplicate callback_uuid. Analytic service is not saved");
+                            analyticResulteRepository.delete(savedanalyticresult);
+                            return;
+                        } else {
+                            savedanalyticresult.setCallbackid(callback_uuid);
+                            analyticResulteRepository.save(savedanalyticresult);
+                        }
+
                     } else {
-                        savedanalyticresult.setCallbackid(callback_uuid);
+                        savedanalyticresult.setStatus("ERROR");
+                        savedanalyticresult.setExecutionMessage("callback url returned HTTP error " + statuscode);
                         analyticResulteRepository.save(savedanalyticresult);
                     }
-
-                } else {
-                    savedanalyticresult.setStatus("ERROR");
-                    savedanalyticresult.setExecutionMessage("callback url returned HTTP error " + statuscode);
-                    analyticResulteRepository.save(savedanalyticresult);
                 }
+
             }
+            //calculate amount of data
+            String start = periods.getJSONObject(0).getString("start");
+            String end = periods.getJSONObject(0).getString("end");
+
+            Instant startInstant = Instant.parse(start);
+            Instant endInstant = Instant.parse(end);
+
+            Duration between = Duration.between(startInstant, endInstant);
+
+            long period_duration = between.getSeconds();
+
+            int step_in_seconds = 1;
+            if (step.contains("m")) {
+                step_in_seconds = Integer.parseInt(step.replace("m", "")) * 60;
+            } else if (step.contains("s")) {
+                step_in_seconds = Integer.parseInt(step.replace("s", ""));
+            } else if (step.contains("h")) {
+                step_in_seconds = Integer.parseInt(step.replace("h", "")) * 3600;
+            }
+
+            if (analytic_service.has("metrics")) {
+                period_duration = Math.round(period_duration * analytic_service.getJSONArray("metrics").length() / step_in_seconds);
+                System.out.println("num of metrics " + period_duration);
+            }
+
+            // Temporal start = periods.getJSONObject(0).getString("start");
+            //Duration duration = Duration.between(previous, now);
+            // This is only added to the registry after success,
+            // so that a previous success in the Pushgateway isn't overwritten on failure.
+            Gauge num_of_metrics = Gauge.build().name("analytic_service_num_of_metrics").help("analytic_service_num_of_metrics").register(registry);
+            num_of_metrics.set(period_duration);
+        } finally {
+            durationTimer.setDuration();
+            PushGateway pg = new PushGateway(prometheusGateway);
+            pg.pushAdd(registry, "analytic_service_job");
 
         }
     }

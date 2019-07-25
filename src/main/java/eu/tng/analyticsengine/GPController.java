@@ -62,16 +62,11 @@ public class GPController {
     @Autowired
     private AnalyticResultRepository analyticResulteRepository;
 
-    //@Value("${physiognomica.server.url}")
-    //String physiognomicaServerURL;
+
     @Value("${prometheus.url}")
     String prometheusURL;
 
-    @Value("${prometheus.gateway}")
-    String prometheusGateway;
-
     private static final Logger logger = Logger.getLogger(GPController.class.getName());
-    public static Counter requests = Counter.build().name("analytic_requests_total").help("Total analytic requests.").register();
 
     //profiler pageland
     @RequestMapping("/")
@@ -293,60 +288,8 @@ public class GPController {
     @RequestMapping(value = "/analytic_service", method = RequestMethod.POST)
     public void consumeAnalyticService(@RequestBody String analytic_service_info
     ) throws IOException {
-        CollectorRegistry registry = new CollectorRegistry();
-        Gauge duration = Gauge.build().name("analytic_service_duration_seconds").help("Duration of analytic process execution in seconds.").register(registry);
-        Gauge.Timer durationTimer = duration.startTimer();
-
-        requests.inc();
-        requests.register(registry);
-
-        try {
+        
             graphProfilerService.consumeAnalyticService(analytic_service_info);
-            //calculate amount of data
-            Gson gson = new Gson();
-            JSONObject analytic_service = new JSONObject(analytic_service_info);
-            JSONArray periods = new JSONArray();
-            if (analytic_service.has("periods")) {
-                periods = analytic_service.getJSONArray("periods");
-            }
-
-            String start = periods.getJSONObject(0).getString("start");
-            String end = periods.getJSONObject(0).getString("end");
-
-            Instant startInstant = Instant.parse(start);
-            Instant endInstant = Instant.parse(end);
-
-            Duration between = Duration.between(startInstant, endInstant);
-
-            long period_duration = between.getSeconds();
-
-            String step = analytic_service.getString("step");
-            int step_in_seconds = 1;
-            if (step.contains("m")) {
-                step_in_seconds = Integer.parseInt(step.replace("m", "")) * 60;
-            } else if (step.contains("s")) {
-                step_in_seconds = Integer.parseInt(step.replace("s", ""));
-            } else if (step.contains("h")) {
-                step_in_seconds = Integer.parseInt(step.replace("h", "")) * 3600;
-            }
-
-            if (analytic_service.has("metrics")) {
-                period_duration = Math.round(period_duration * analytic_service.getJSONArray("metrics").length() / step_in_seconds);
-                System.out.println("num of metrics "+period_duration);
-            }
-
-            // Temporal start = periods.getJSONObject(0).getString("start");
-            //Duration duration = Duration.between(previous, now);
-            // This is only added to the registry after success,
-            // so that a previous success in the Pushgateway isn't overwritten on failure.
-            Gauge num_of_metrics = Gauge.build().name("analytic_service_num_of_metrics").help("analytic_service_num_of_metrics").register(registry);
-            num_of_metrics.set(period_duration);
-        } finally {
-            durationTimer.setDuration();
-            PushGateway pg = new PushGateway(prometheusGateway);
-            pg.pushAdd(registry, "analytic_service_job");
-
-        }
     }
 
     @ExceptionHandler(CustomNotFoundException.class)
